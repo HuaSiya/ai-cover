@@ -1,0 +1,58 @@
+# AI 翻唱点歌示例配置。
+# 复制为 config.toml 后按需修改；MaiBot 也会在首次加载时自动生成 config.toml。
+
+[plugin]
+enabled = true
+config_version = "1.1.0"
+
+[search]
+# 依次尝试的关键词；{song} 会替换为歌名
+query_templates = ["{song} AI翻唱", "{song} AI cover", "{song} 翻唱"]
+max_pages = 1
+max_candidates = 6
+min_score = 10.0
+require_ai = true
+allow_non_ai_fallback = true
+min_duration_seconds = 20
+max_duration_seconds = 600
+# 可选：B 站登录后的 SESSDATA，遇到风控时更稳
+sessdata = ""
+user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+rate_limit_seconds = 1.0
+request_timeout_seconds = 15.0
+use_env_proxy = false
+proxy_url = ""
+
+[audio]
+# 语音最终会压成 silk，low（64k）通常足够
+quality = "low"
+max_file_size_mb = 9
+download_timeout_seconds = 60.0
+cache_enabled = true
+cache_expire_hours = 72
+cache_max_size_mb = 512
+
+[delivery]
+# 默认只发一条 QQ 语音，不发等待提示、标题、UP 主和链接。
+send_ack = false
+ack_text = "收到～正在找《{song}》的 AI 翻唱，稍等一下哦"
+send_caption = false
+caption_template = "🎵 {title}\n👤 UP主：{author}\n⏱️ 时长：{duration}\n🔗 {url}"
+non_ai_note = ""
+send_done_text = false
+done_text = "翻唱语音发好啦～"
+fallback_to_link = false
+failure_text = "找到《{song}》的翻唱了，但音频下载/发送失败，可以先点链接听听：{url}"
+no_result_text = "没有找到《{song}》的 AI 翻唱，换个歌名或歌手试试？"
+search_failed_text = "B 站搜索暂时失败了，可能是网络或风控问题，稍后再试试吧"
+voice_storage = false
+max_attempts = 2
+
+[limits]
+cooldown_seconds = 20
+daily_limit = 10
+max_concurrent = 2
+allow_group = true
+allow_private = true
+allowed_group_ids = []
+allowed_user_ids = []
