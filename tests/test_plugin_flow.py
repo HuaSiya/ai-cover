@@ -243,6 +243,102 @@ class PluginFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.plugin.ctx.send.customs), 1)
         self.assertEqual(self.plugin.ctx.send.texts, [])
 
+    async def test_sing_natural_language_at_mention_sends_voice(self) -> None:
+        from ai_cover_flow_test.covers import COMMAND_PATTERN
+
+        item = make_item(
+            self.module,
+            bvid="BV1Sing00001",
+            title="寒枝摇碎晚霞 AI翻唱",
+            tags="寒枝摇碎晚霞,AI翻唱,翻唱",
+        )
+        self.plugin._client = FakeBilibiliClient([item])
+        text = "@bot 唱寒枝摇碎晚霞"
+        match = re.search(COMMAND_PATTERN, text)
+        self.assertIsNotNone(match)
+        assert match is not None
+
+        success, _, _ = await self.plugin.handle_cover(
+            stream_id="stream-1",
+            text=text,
+            matched_groups=match.groupdict(),
+            group_id="123",
+            user_id="456",
+            message={},
+        )
+        self.assertTrue(success)
+        self.assertEqual(len(self.plugin.ctx.send.customs), 1)
+        self.assertEqual(self.plugin.ctx.send.texts, [])
+
+    async def test_song_request_command_sends_voice(self) -> None:
+        from ai_cover_flow_test.covers import COMMAND_PATTERN
+
+        item = make_item(
+            self.module,
+            bvid="BV1Request01",
+            title="【Hi-Res无损音质】｜《晴天》- 周杰伦",
+            tags="晴天,周杰伦",
+            description="",
+            typename="音乐综合",
+        )
+        self.plugin._client = FakeBilibiliClient([item])
+        text = "@bot 点歌 晴天"
+        match = re.search(COMMAND_PATTERN, text)
+        self.assertIsNotNone(match)
+        assert match is not None
+
+        success, _, _ = await self.plugin.handle_cover(
+            stream_id="stream-1",
+            text=text,
+            matched_groups=match.groupdict(),
+            group_id="123",
+            user_id="456",
+            message={},
+        )
+        self.assertTrue(success)
+        self.assertEqual(len(self.plugin.ctx.send.customs), 1)
+        self.assertEqual(self.plugin.ctx.send.texts, [])
+
+    async def test_song_request_without_song_sends_usage(self) -> None:
+        from ai_cover_flow_test.covers import COMMAND_PATTERN
+
+        text = "@bot 点歌"
+        match = re.search(COMMAND_PATTERN, text)
+        self.assertIsNotNone(match)
+        assert match is not None
+
+        success, _, _ = await self.plugin.handle_cover(
+            stream_id="stream-1",
+            text=text,
+            matched_groups=match.groupdict(),
+            group_id="123",
+            user_id="456",
+            message={},
+        )
+        self.assertFalse(success)
+        self.assertEqual(self.plugin.ctx.send.customs, [])
+        self.assertTrue(any("想听哪首" in text for text, _ in self.plugin.ctx.send.texts))
+
+    async def test_sing_without_song_sends_usage(self) -> None:
+        from ai_cover_flow_test.covers import COMMAND_PATTERN
+
+        text = "@bot 唱首歌"
+        match = re.search(COMMAND_PATTERN, text)
+        self.assertIsNotNone(match)
+        assert match is not None
+
+        success, _, _ = await self.plugin.handle_cover(
+            stream_id="stream-1",
+            text=text,
+            matched_groups=match.groupdict(),
+            group_id="123",
+            user_id="456",
+            message={},
+        )
+        self.assertFalse(success)
+        self.assertEqual(self.plugin.ctx.send.customs, [])
+        self.assertTrue(any("想听哪首" in text for text, _ in self.plugin.ctx.send.texts))
+
     async def test_command_pattern_metadata_supports_at_mention(self) -> None:
         info = getattr(self.module.AiCoverPlugin.handle_cover, "__maibot_component_info__", None)
         self.assertIsNotNone(info)

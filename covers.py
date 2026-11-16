@@ -22,17 +22,29 @@ except ImportError:  # pragma: no cover - 仅独立运行测试时走到这里
 
 DEFAULT_QUERY_TEMPLATES = ("{song} AI翻唱", "{song} AI cover", "{song} 翻唱")
 
+# 自然语言分支的负向前瞻：避开问句、评价、功能询问。
+_NATURAL_META_NEGATIVE = (
+    r"(?!功能|怎么|如何|什么|为什么|能不能|会不会|可以|吗|呢|吧|呗|教程|技巧|插件|活动|比赛|排行|推荐|歌名|的|过|得|了|是|很好听|好听|不错|厉害|棒|绝了|爱了|真好听|真不错|真棒|太棒|太好听"
+    r"|歌(?:功能|怎么|如何|什么|为什么|能不能|会不会|可以|吗|呢|吧|呗|教程|技巧|插件|活动|比赛|排行|推荐|歌名|的|过|得|了|是|很好听|好听|不错|厉害|棒|绝了|爱了|真好听|真不错|真棒|太棒|太好听))"
+)
+
 # 同时兼容：
-#   1. “/翻唱 晴天”“@机器人 /翻唱 晴天”
+#   1. “/翻唱 晴天”“/点歌 晴天”“@机器人 /翻唱 晴天”
 #   2. “@机器人 翻唱晴天”“@机器人 帮我翻唱一下《晴天》”
-# 自然语言分支只匹配带 @ 的消息，并用负向前瞻避开“你会翻唱吗”“翻唱功能怎么用”等问句。
+#   3. “@机器人 唱晴天”“@机器人 唱寒枝摇碎晚霞”“@机器人 唱首歌”
+#   4. “@机器人 点歌晴天”“@机器人 帮我点歌一下《晴天》”
+# 自然语言分支只匹配带 @ 的消息，并用负向前瞻避开“你会翻唱吗”“唱歌功能怎么用”等问句。
 COMMAND_PATTERN = (
     r"^\s*(?:"
-    r"(?:@.+?\s*)?[/#](?i:ai)?翻唱\s*(?P<song>.*)"
+    r"(?:@.+?\s*)?[/#](?i:ai)?(?P<command>翻唱|点歌)\s*(?P<song>.*)"
     r"|"
-    r"@.+?翻唱\s*"
-    r"(?!功能|怎么|如何|什么|为什么|能不能|会不会|可以|吗|呢|吧|呗|教程|技巧|插件|活动|比赛|排行|推荐|歌名|这个|那个|这首歌|那首歌|一首歌|的|过|得|了|是|很好听|好听|不错|厉害|棒|绝了|爱了)"
-    r"(?P<natural>.*)"
+    r"@.+?翻唱\s*" + _NATURAL_META_NEGATIVE + r"(?P<natural>.*)"
+    r"|"
+    r"@.+?唱\s*" + _NATURAL_META_NEGATIVE + r"(?P<sing>.*)"
+    r"|"
+    r"@.+?点歌\s*"
+    r"(?!功能|怎么|如何|什么|为什么|能不能|会不会|可以|吗|呢|吧|呗|教程|技巧|插件|活动|比赛|排行|推荐|歌名|台|单|榜|的|过|得|了|是|很好听|好听|不错|厉害|棒|绝了|爱了|真好听|真不错|真棒|太棒|太好听)"
+    r"(?P<request>.*)"
     r")$"
 )
 
@@ -170,6 +182,8 @@ _SOFT_NEGATIVE_COMBINED = (
 
 _GENERIC_TOKENS = {"ai", "翻唱", "cover", "ai翻唱", "aicover", "翻唱版", "cover版"}
 
+_TITLE_BRACKET_RE = re.compile(r"[《<「『]([^》>」』]{1,60})[》>」』]")
+
 _COMMAND_RE = re.compile(COMMAND_PATTERN, re.DOTALL)
 _AI_SUFFIX_RE = re.compile(
     r"\s*(?:[（(]?\s*(?:ai\s*翻唱|ai\s*cover|ai\s*音色)\s*[）)]?)\s*$",
@@ -183,12 +197,16 @@ def extract_song(text: str, matched_groups: dict[str, object] | None = None) -> 
 
     song = ""
     natural = ""
+    sing = ""
+    request = ""
     if isinstance(matched_groups, dict):
         song = str(matched_groups.get("song") or "")
         natural = str(matched_groups.get("natural") or "")
+        sing = str(matched_groups.get("sing") or "")
+        request = str(matched_groups.get("request") or "")
 
-    if not song and natural:
-        song = _clean_natural_song(natural)
+    if not song and (natural or sing or request):
+        song = _clean_natural_song(natural or sing or request)
 
     if not song:
         match = _COMMAND_RE.search(str(text or ""))
@@ -196,13 +214,36 @@ def extract_song(text: str, matched_groups: dict[str, object] | None = None) -> 
             matched = match.groupdict()
             song = str(matched.get("song") or "")
             if not song:
-                song = _clean_natural_song(str(matched.get("natural") or ""))
+                song = _clean_natural_song(
+                    str(
+                        matched.get("natural")
+                        or matched.get("sing")
+                        or matched.get("request")
+                        or ""
+                    )
+                )
 
     song = str(song or "").strip().strip("\"'“”‘’ ")
     song = re.sub(r"^[《<]+|[》>]+$", "", song).strip()
     song = _AI_SUFFIX_RE.sub("", song).strip()
     song = _AI_PREFIX_RE.sub("", song).strip()
     return song[:80].strip()
+
+
+def extract_mode(text: str, matched_groups: dict[str, object] | None = None) -> str:
+    """判断本次请求是“翻唱/唱歌”还是“点歌”。"""
+
+    if isinstance(matched_groups, dict):
+        command = str(matched_groups.get("command") or "")
+        if command == "点歌" or matched_groups.get("request") is not None:
+            return "request"
+        if command == "翻唱" or matched_groups.get("natural") is not None or matched_groups.get("sing") is not None:
+            return "cover"
+
+    raw = str(text or "")
+    if re.search(r"^[/#](?i:ai)?点歌", raw) or re.search(r"^@.+?点歌", raw):
+        return "request"
+    return "cover"
 
 
 def normalize_text(value: str) -> str:
@@ -242,7 +283,7 @@ _NATURAL_LEADING_FILLERS_RE = re.compile(
 _NATURAL_REPEAT_PREFIX_RE = re.compile(r"^(?:翻唱|唱)\s*", re.IGNORECASE)
 _NATURAL_TRAILING_GENERIC_RE = re.compile(r"\s*(?:这首歌|那首歌|一首歌)\s*$")
 _NATURAL_TRAILING_REQUEST_RE = re.compile(
-    r"\s*(?:可以吗|好不好|行吗|好吗|可以嘛|谢谢(?:你)?|给我听|很好听|不错|厉害|绝了|爱了|一下|呗|吧)\s*$",
+    r"\s*(?:可以吗|好不好|行吗|好吗|可以嘛|谢谢(?:你)?|给我听|给你听|听听|很好听|不错|厉害|绝了|爱了|一下|呗|吧)\s*$",
     re.IGNORECASE,
 )
 _NATURAL_TRAILING_PARTICLES_RE = re.compile(r"\s*[吗呢呀啊啦]\s*$")
@@ -370,6 +411,16 @@ def evaluate_candidate(
 
     # ---------- 歌曲匹配 ----------
     main_token = tokens[0]
+
+    # 避免把《半晴天》《像晴天像雨天》当成《晴天》：
+    # 只要书名号里是另一首更长的歌名，就排除，不管标签/话题里是否重复出现“晴天”。
+    bracket_contents = [normalize_text(content) for content in _TITLE_BRACKET_RE.findall(item.title)]
+    if bracket_contents:
+        exact_in_bracket = any(main_token == content for content in bracket_contents)
+        inside_other_bracket = any(main_token in content and main_token != content for content in bracket_contents)
+        if inside_other_bracket and not exact_in_bracket:
+            return None
+
     in_title = main_token in title_n
     in_tags = main_token in tags_n
     in_desc = main_token in desc_n
@@ -510,6 +561,215 @@ def rank_search_items(
             item,
             song,
             require_ai=require_ai,
+            min_duration=min_duration,
+            max_duration=max_duration,
+            min_score=min_score,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+
+    candidates.sort(key=lambda candidate: (candidate.score, candidate.item.play, candidate.item.pubdate), reverse=True)
+    if limit and limit > 0:
+        return candidates[:limit]
+    return candidates
+
+
+# ===== 点歌模式：直接搜歌名，允许原唱/MV/翻唱，不要求 AI =====
+
+_REQUEST_ALLOWED_TYPENAMES = {
+    "音乐综合",
+    "mv",
+    "翻唱",
+    "原创音乐",
+    "日常",
+    "音乐现场",
+    "现场",
+    "演唱会",
+    "音乐",
+    "歌曲",
+    "音乐mv",
+    "音乐视频",
+}
+
+_REQUEST_HARD_NEGATIVE_TITLE = (
+    "伴奏",
+    "纯音乐",
+    "instrumental",
+    "offvocal",
+    "off-vocal",
+    "消音",
+    "去人声",
+    "和声伴奏",
+    "教程",
+    "教学",
+    "翻弹",
+    "指弹",
+    "打谱",
+    "扒谱",
+    "midi",
+    "鼓谱",
+    "简谱",
+    "动态鼓谱",
+    "钢琴简谱",
+    "钢琴",
+    "吉他",
+    "古筝",
+    "二胡",
+    "笛子",
+    "萨克斯",
+    "架子鼓",
+    "reaction",
+    "直播",
+    "录播",
+    "解说",
+    "解析",
+    "乐评",
+    "合集",
+    "串烧",
+    "一小时",
+    "1小时",
+    "循环",
+    "舞蹈",
+    "游戏",
+    "影视",
+    "动画",
+    "鬼畜",
+    "搞笑",
+    "恶搞",
+    "翻车",
+    "挑战",
+    "预告",
+    "片段",
+    "试听",
+)
+
+_REQUEST_TYPE_BONUS = {
+    "音乐综合": 5.0,
+    "mv": 4.0,
+    "翻唱": 3.0,
+    "原创音乐": 2.0,
+    "音乐现场": 2.0,
+    "现场": 2.0,
+    "演唱会": 2.0,
+    "音乐": 2.0,
+    "歌曲": 2.0,
+    "音乐mv": 2.0,
+    "音乐视频": 2.0,
+    "日常": 0.0,
+}
+
+
+def evaluate_request_candidate(
+    item: VideoSearchItem,
+    song: str,
+    *,
+    min_duration: int = 30,
+    max_duration: int = 900,
+    min_score: float = 8.0,
+) -> Candidate | None:
+    """给点歌候选打分：允许原唱/MV/翻唱/普通翻唱，只要歌名和时长合适。"""
+
+    tokens = split_song_tokens(song)
+    if not tokens:
+        return None
+
+    main_token = tokens[0]
+    title_n = normalize_text(item.title)
+    if main_token not in title_n:
+        return None
+
+    # 排除《半晴天》《像晴天像雨天》这类“书名号里是另一首歌”的情况。
+    bracket_contents = [normalize_text(content) for content in _TITLE_BRACKET_RE.findall(item.title)]
+    if bracket_contents:
+        exact_in_bracket = any(main_token == content for content in bracket_contents)
+        inside_other_bracket = any(main_token in content and main_token != content for content in bracket_contents)
+        if inside_other_bracket and not exact_in_bracket:
+            return None
+
+    typename_n = normalize_text(item.typename)
+    if typename_n and typename_n not in _REQUEST_ALLOWED_TYPENAMES:
+        return None
+    if any(phrase in title_n for phrase in _REQUEST_HARD_NEGATIVE_TITLE):
+        return None
+
+    duration = int(item.duration_s or 0)
+    if duration > 0 and (duration < max(1, min_duration) or duration > max(1, max_duration)):
+        return None
+
+    score = 12.0
+    reasons: list[str] = [f"标题含「{main_token}」"]
+
+    full_song_n = normalize_text(song)
+    if full_song_n and full_song_n in title_n:
+        score += 3.0
+        reasons.append("标题完整匹配")
+
+    for token in tokens[1:]:
+        if token in title_n:
+            score += 2.0
+
+    type_bonus = _REQUEST_TYPE_BONUS.get(typename_n, 0.0)
+    score += type_bonus
+    if type_bonus:
+        reasons.append(f"分区「{item.typename}」")
+
+    if any(marker in title_n for marker in ("原版", "官方", "无损", "hires", "4k")):
+        score += 2.0
+        reasons.append("原版/无损标记")
+
+    combined = f"{title_n}|{normalize_text(item.description)}|{normalize_text(item.tags)}"
+    is_cover = any(phrase in combined for phrase in _COVER_PHRASES) or "翻唱" in typename_n
+    is_ai = any(phrase in combined for phrase in _AI_PHRASES) or bool(_AI_WORD_PATTERN.search(combined))
+    if is_cover:
+        score += 1.0
+    if is_ai:
+        score += 1.0
+
+    score += min(5.0, math.log10(max(item.play, 0) + 1))
+
+    if 60 <= duration <= 360:
+        score += 3.0
+    elif 30 <= duration <= 600:
+        score += 1.0
+    elif duration > 0:
+        score -= 3.0
+
+    age_days = (time.time() - item.pubdate) / 86400 if item.pubdate > 0 else -1
+    if 0 <= age_days <= 1095:
+        score += 0.5
+
+    if score < float(min_score):
+        return None
+
+    return Candidate(
+        item=item,
+        score=round(score, 2),
+        is_ai=is_ai,
+        is_cover=is_cover,
+        reasons=tuple(reasons),
+    )
+
+
+def rank_request_items(
+    items: list[VideoSearchItem] | tuple[VideoSearchItem, ...],
+    song: str,
+    *,
+    min_duration: int = 30,
+    max_duration: int = 900,
+    min_score: float = 8.0,
+    limit: int = 0,
+) -> list[Candidate]:
+    """点歌模式批量打分、去重并按分数降序返回。"""
+
+    seen: set[str] = set()
+    candidates: list[Candidate] = []
+    for item in items:
+        if item.bvid in seen:
+            continue
+        seen.add(item.bvid)
+        candidate = evaluate_request_candidate(
+            item,
+            song,
             min_duration=min_duration,
             max_duration=max_duration,
             min_score=min_score,

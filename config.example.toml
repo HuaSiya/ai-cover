@@ -3,14 +3,17 @@
 
 [plugin]
 enabled = true
-config_version = "1.1.0"
+config_version = "1.3.0"
 
 [search]
 # 依次尝试的关键词；{song} 会替换为歌名
 query_templates = ["{song} AI翻唱", "{song} AI cover", "{song} 翻唱"]
+# 点歌模式直接用歌名搜索 B 站，可按需增加 "{song} 歌曲" 等模板
+request_query_templates = ["{song}"]
 max_pages = 1
 max_candidates = 6
 min_score = 10.0
+request_min_score = 8.0
 require_ai = true
 allow_non_ai_fallback = true
 min_duration_seconds = 20
@@ -42,8 +45,9 @@ non_ai_note = ""
 send_done_text = false
 done_text = "翻唱语音发好啦～"
 fallback_to_link = false
-failure_text = "找到《{song}》的翻唱了，但音频下载/发送失败，可以先点链接听听：{url}"
+failure_text = "找到《{song}》了，但音频下载/发送失败，可以先点链接听听：{url}"
 no_result_text = "没有找到《{song}》的 AI 翻唱，换个歌名或歌手试试？"
+request_no_result_text = "没有找到《{song}》的可播放版本，换个歌名试试？"
 search_failed_text = "B 站搜索暂时失败了，可能是网络或风控问题，稍后再试试吧"
 voice_storage = false
 max_attempts = 2

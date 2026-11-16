@@ -17,10 +17,13 @@ from bilibili import (  # noqa: E402
 from covers import (  # noqa: E402
     COMMAND_PATTERN,
     evaluate_candidate,
+    evaluate_request_candidate,
     expand_queries,
+    extract_mode,
     extract_song,
     format_caption,
     format_duration,
+    rank_request_items,
     rank_search_items,
     split_song_tokens,
 )
@@ -87,6 +90,23 @@ class TextParsingTests(unittest.TestCase):
         self.assertEqual(extract_song("@bot /翻唱 晴天 周杰伦", None), "晴天 周杰伦")
         self.assertEqual(extract_song("@bot #翻唱 起风了", None), "起风了")
 
+    def test_extract_song_with_request_command(self) -> None:
+        self.assertEqual(extract_song("/点歌 晴天", None), "晴天")
+        self.assertEqual(extract_song("@bot 点歌 晴天", None), "晴天")
+        self.assertEqual(extract_song("@bot 帮我点歌一下《晴天》", None), "晴天")
+        self.assertEqual(extract_song("@bot 点歌一首晴天", None), "晴天")
+        self.assertEqual(extract_song("@bot 点歌这首歌", None), "")
+        self.assertEqual(extract_song("@bot 点歌功能怎么用", None), "")
+
+    def test_extract_mode(self) -> None:
+        self.assertEqual(extract_mode("/点歌 晴天", None), "request")
+        self.assertEqual(extract_mode("@bot 点歌 晴天", None), "request")
+        self.assertEqual(extract_mode("@bot 点歌", None), "request")
+        self.assertEqual(extract_mode("/翻唱 晴天", None), "cover")
+        self.assertEqual(extract_mode("@bot 翻唱晴天", None), "cover")
+        self.assertEqual(extract_mode("@bot 唱晴天", None), "cover")
+        self.assertEqual(extract_mode("@bot 唱首歌", None), "cover")
+
     def test_extract_natural_language_song(self) -> None:
         self.assertEqual(extract_song("@bot 翻唱晴天", None), "晴天")
         self.assertEqual(extract_song("@bot 帮我翻唱一下《晴天》", None), "晴天")
@@ -95,6 +115,14 @@ class TextParsingTests(unittest.TestCase):
         self.assertEqual(extract_song("@bot 来一首翻唱：晴天 周杰伦", None), "晴天 周杰伦")
         self.assertEqual(extract_song("@bot 翻唱晴天给我听", None), "晴天")
         self.assertEqual(extract_song("@bot 翻唱晴天（AI版）", None), "晴天")
+        self.assertEqual(extract_song("@bot 唱寒枝摇碎晚霞", None), "寒枝摇碎晚霞")
+        self.assertEqual(extract_song("@bot 唱一下《晴天》", None), "晴天")
+        self.assertEqual(extract_song("@bot 给我唱一首晴天", None), "晴天")
+        self.assertEqual(extract_song("@bot 能唱《起风了》吗", None), "起风了")
+        self.assertEqual(extract_song("@bot 唱首歌", None), "")
+        self.assertEqual(extract_song("@bot 唱这首歌", None), "")
+        self.assertEqual(extract_song("@bot 唱得不错", None), "")
+        self.assertEqual(extract_song("@bot 唱歌功能怎么用", None), "")
         self.assertEqual(extract_song("@bot 翻唱一下这首歌", None), "")
         self.assertEqual(extract_song("@bot 你会翻唱吗", None), "")
         self.assertEqual(extract_song("@bot 翻唱功能怎么用", None), "")
@@ -125,6 +153,9 @@ class TextParsingTests(unittest.TestCase):
             ("@bot 帮我翻唱一下《晴天》可以吗", "晴天"),
             ("@bot 能翻唱《起风了》吗", "起风了"),
             ("@bot 来一首翻唱：Lemon", "Lemon"),
+            ("@bot 唱寒枝摇碎晚霞", "寒枝摇碎晚霞"),
+            ("@bot 唱一下《晴天》可以吗", "晴天"),
+            ("@bot 给我唱一首晴天", "晴天"),
         ):
             match = re.search(COMMAND_PATTERN, text)
             self.assertIsNotNone(match, text)
@@ -134,11 +165,44 @@ class TextParsingTests(unittest.TestCase):
         for text in (
             "@bot 你会翻唱吗",
             "@bot 翻唱功能怎么用",
-            "@bot 翻唱这首歌",
             "@bot 你翻唱的晴天很好听",
+            "@bot 唱得不错",
+            "@bot 唱歌功能怎么用",
+            "@bot 唱得真好",
         ):
             match = re.search(COMMAND_PATTERN, text)
             self.assertIsNone(match, text)
+
+        for text in (
+            "@bot 翻唱这首歌",
+            "@bot 唱这首歌",
+            "@bot 唱首歌",
+        ):
+            match = re.search(COMMAND_PATTERN, text)
+            self.assertIsNotNone(match, text)
+            assert match is not None
+            self.assertEqual(extract_song(text, match.groupdict()), "")
+
+    def test_command_pattern_matches_song_request(self) -> None:
+        import re
+
+        for text in (
+            "/点歌 晴天",
+            "@bot 点歌 晴天",
+            "@bot 帮我点歌一下《晴天》",
+        ):
+            match = re.search(COMMAND_PATTERN, text)
+            self.assertIsNotNone(match, text)
+            assert match is not None
+            self.assertEqual(extract_mode(text, match.groupdict()), "request")
+            self.assertEqual(extract_song(text, match.groupdict()), "晴天")
+
+        for text in (
+            "@bot 点歌功能怎么用",
+            "@bot 点歌台",
+            "@bot 点歌榜",
+        ):
+            self.assertIsNone(re.search(COMMAND_PATTERN, text), text)
 
     def test_format_duration(self) -> None:
         self.assertEqual(format_duration(268), "4:28")
@@ -269,6 +333,88 @@ class CandidateTests(unittest.TestCase):
     def test_duration_filter(self) -> None:
         item = make_item(duration_s=1200)
         self.assertIsNone(evaluate_candidate(item, "晴天", require_ai=False, max_duration=600))
+
+    def test_other_song_containing_song_name_rejected(self) -> None:
+        item = make_item(
+            title="2000年黄砖时期的陶喆唱《半晴天》【Ai翻唱】",
+            tags="半晴天,AI翻唱,陶喆",
+            typename="翻唱",
+        )
+        self.assertIsNone(evaluate_candidate(item, "晴天", require_ai=True))
+
+    def test_other_song_with_hashtag_occurrences_rejected(self) -> None:
+        item = make_item(
+            title="《像晴天像雨天》AI Cover 孙燕姿完整版#孙燕姿 #像晴天像雨天 #ai翻唱",
+            tags="像晴天像雨天,AI翻唱,孙燕姿",
+            typename="翻唱",
+        )
+        self.assertIsNone(evaluate_candidate(item, "晴天", require_ai=True))
+
+    def test_other_song_with_longer_bracketed_name_rejected(self) -> None:
+        item = make_item(
+            title="《我的晴天》 AI翻唱",
+            tags="我的晴天,AI翻唱",
+            typename="翻唱",
+        )
+        self.assertIsNone(evaluate_candidate(item, "晴天", require_ai=True))
+
+    def test_exact_bracketed_song_still_accepted(self) -> None:
+        item = make_item(title="《晴天》| AI 翻唱", tags="晴天,AI翻唱,翻唱", typename="翻唱")
+        candidate = evaluate_candidate(item, "晴天", require_ai=True)
+        self.assertIsNotNone(candidate)
+
+
+class RequestCandidateTests(unittest.TestCase):
+    def test_original_song_audio_accepted(self) -> None:
+        item = make_item(
+            title="【Hi-Res无损音质】｜《晴天》- 周杰伦",
+            tags="晴天,周杰伦",
+            description="",
+            typename="音乐综合",
+            play=3_518_347,
+        )
+        candidate = evaluate_request_candidate(item, "晴天")
+        self.assertIsNotNone(candidate)
+        assert candidate is not None
+        self.assertGreater(candidate.score, 25)
+
+    def test_tutorial_rejected(self) -> None:
+        item = make_item(title="《晴天》原调教学", tags="晴天,教学", typename="音乐教学")
+        self.assertIsNone(evaluate_request_candidate(item, "晴天"))
+
+    def test_instrumental_rejected(self) -> None:
+        item = make_item(title="晴天 钢琴简谱", tags="晴天,钢琴", typename="演奏")
+        self.assertIsNone(evaluate_request_candidate(item, "晴天"))
+
+    def test_wrong_song_rejected(self) -> None:
+        item = make_item(title="《七里香》- 周杰伦", tags="七里香,周杰伦", typename="音乐综合")
+        self.assertIsNone(evaluate_request_candidate(item, "晴天"))
+
+    def test_other_bracketed_song_rejected(self) -> None:
+        item = make_item(
+            title="《像晴天像雨天》AI Cover 孙燕姿完整版",
+            tags="像晴天像雨天,AI翻唱",
+            typename="音乐综合",
+        )
+        self.assertIsNone(evaluate_request_candidate(item, "晴天"))
+
+    def test_ranking_prefers_music_over_daily(self) -> None:
+        music = make_item(
+            bvid="BV1Music0001",
+            title="【Hi-Res无损】《晴天》- 周杰伦",
+            tags="晴天,周杰伦",
+            typename="音乐综合",
+            play=1000,
+        )
+        daily = make_item(
+            bvid="BV1Daily0001",
+            title="《晴天》日常翻唱",
+            tags="晴天,翻唱",
+            typename="日常",
+            play=1_000_000,
+        )
+        candidates = rank_request_items([daily, music], "晴天")
+        self.assertEqual(candidates[0].bvid, music.bvid)
 
 
 if __name__ == "__main__":

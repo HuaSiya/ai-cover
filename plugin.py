@@ -39,8 +39,10 @@ try:
         COMMAND_PATTERN,
         DEFAULT_CAPTION_TEMPLATE,
         expand_queries,
+        extract_mode,
         extract_song,
         format_caption,
+        rank_request_items,
         rank_search_items,
     )
 except ImportError:  # pragma: no cover - 仅独立运行时走到这里
@@ -58,8 +60,10 @@ except ImportError:  # pragma: no cover - 仅独立运行时走到这里
         COMMAND_PATTERN,
         DEFAULT_CAPTION_TEMPLATE,
         expand_queries,
+        extract_mode,
         extract_song,
         format_caption,
+        rank_request_items,
         rank_search_items,
     )
 
@@ -77,7 +81,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = Field(default=True, description="是否启用 /翻唱 指令")
-    config_version: str = Field(default="1.1.0", description="配置版本")
+    config_version: str = Field(default="1.3.0", description="配置版本")
 
 
 class SearchConfig(PluginConfigBase):
@@ -89,11 +93,16 @@ class SearchConfig(PluginConfigBase):
 
     query_templates: list[str] = Field(
         default_factory=lambda: ["{song} AI翻唱", "{song} AI cover", "{song} 翻唱"],
-        description="依次尝试的搜索关键词模板，{song} 会被替换为歌名",
+        description="翻唱/唱歌模式依次尝试的搜索关键词模板，{song} 会被替换为歌名",
+    )
+    request_query_templates: list[str] = Field(
+        default_factory=lambda: ["{song}"],
+        description="点歌模式使用的搜索关键词模板，默认直接用歌名搜索 B 站",
     )
     max_pages: int = Field(default=1, ge=1, le=3, description="每个关键词最多翻几页")
     max_candidates: int = Field(default=6, ge=1, le=20, description="进入打分排序的候选数量上限")
-    min_score: float = Field(default=10.0, ge=0, le=100, description="候选最低分，低于该分数不发")
+    min_score: float = Field(default=10.0, ge=0, le=100, description="翻唱候选最低分，低于该分数不发")
+    request_min_score: float = Field(default=8.0, ge=0, le=100, description="点歌候选最低分，低于该分数不发")
     require_ai: bool = Field(default=True, description="是否只接受带 AI 翻唱特征的版本")
     allow_non_ai_fallback: bool = Field(default=True, description="找不到 AI 版时是否退而发送普通翻唱")
     min_duration_seconds: int = Field(default=20, ge=5, le=120, description="视频最短时长（秒）")
@@ -149,12 +158,16 @@ class DeliveryConfig(PluginConfigBase):
     done_text: str = Field(default="翻唱语音发好啦～", description="成功提示文案")
     fallback_to_link: bool = Field(default=False, description="音频失败时是否发送原视频链接兜底（默认关闭）")
     failure_text: str = Field(
-        default="找到《{song}》的翻唱了，但音频下载/发送失败，可以先点链接听听：{url}",
+        default="找到《{song}》了，但音频下载/发送失败，可以先点链接听听：{url}",
         description="音频失败兜底文案，可用 {song} {url}",
     )
     no_result_text: str = Field(
         default="没有找到《{song}》的 AI 翻唱，换个歌名或歌手试试？",
-        description="没有候选时的文案，可用 {song}",
+        description="翻唱模式没有候选时的文案，可用 {song}",
+    )
+    request_no_result_text: str = Field(
+        default="没有找到《{song}》的可播放版本，换个歌名试试？",
+        description="点歌模式没有候选时的文案，可用 {song}",
     )
     search_failed_text: str = Field(
         default="B 站搜索暂时失败了，可能是网络或风控问题，稍后再试试吧",
@@ -323,7 +336,7 @@ class AiCoverPlugin(MaiBotPlugin):
 
     @Command(
         "ai_cover",
-        description="搜索并发送指定歌曲的 AI 翻唱语音；支持 /翻唱 歌名 和 @机器人 翻唱XX",
+        description="AI 翻唱点歌：支持 /翻唱、/点歌、@机器人 翻唱XX、@机器人 唱XX、@机器人 点歌XX",
         pattern=COMMAND_PATTERN,
         timeout_ms=180000,
     )
@@ -344,9 +357,12 @@ class AiCoverPlugin(MaiBotPlugin):
             return False, "插件已停用", True
 
         song = extract_song(text, matched_groups)
+        mode = extract_mode(text, matched_groups)
         if not song:
             await self.ctx.send.text(
-                "用法：/翻唱 歌名\n例如：/翻唱 晴天\n也可以带上歌手：/翻唱 晴天 周杰伦",
+                "想听哪首？\n"
+                "翻唱：/翻唱 歌名 或 @我 唱 歌名\n"
+                "点歌：/点歌 歌名 或 @我 点歌 歌名",
                 stream_id,
             )
             return False, "缺少歌名", True
@@ -377,11 +393,12 @@ class AiCoverPlugin(MaiBotPlugin):
         self._cooldowns[stream_id] = now + max(0, int(cfg.limits.cooldown_seconds))
 
         if cfg.delivery.send_ack:
-            ack = safe_format(
-                cfg.delivery.ack_text,
-                "收到～正在找《{song}》的 AI 翻唱，稍等一下哦",
-                song=song,
+            ack_default = (
+                "收到～正在找《{song}》，稍等一下哦"
+                if mode == "request"
+                else "收到～正在找《{song}》的 AI 翻唱，稍等一下哦"
             )
+            ack = safe_format(cfg.delivery.ack_text, ack_default, song=song)
             await self.ctx.send.text(ack, stream_id)
 
         try:
@@ -390,54 +407,89 @@ class AiCoverPlugin(MaiBotPlugin):
             if semaphore is None:
                 raise RuntimeError("插件尚未初始化")
             async with semaphore:
-                sent = await asyncio.wait_for(self._run_cover(song, stream_id), timeout=170.0)
-            return (True, "已发送 AI 翻唱语音", True) if sent else (False, "没有发送", True)
+                sent = await asyncio.wait_for(self._run_cover(song, stream_id, mode), timeout=170.0)
+            return (True, "已发送语音条", True) if sent else (False, "没有发送", True)
         except asyncio.TimeoutError:
             await self.ctx.send.text("找歌超时了，可能是网络或 B 站抽风，稍后再试试吧", stream_id)
             return False, "超时", True
         except Exception:
-            self.ctx.logger.exception("处理 /翻唱 指令失败: %s", song)
-            await self.ctx.send.text("翻唱获取失败了，稍后再试试吧～", stream_id)
+            self.ctx.logger.exception("处理点歌/翻唱指令失败: %s", song)
+            await self.ctx.send.text("找歌失败了，稍后再试试吧～", stream_id)
             return False, "异常", True
 
     # ---------------- 业务主流程 ----------------
 
-    async def _run_cover(self, song: str, stream_id: str) -> bool:
+    async def _run_cover(self, song: str, stream_id: str, mode: str = "cover") -> bool:
         cfg = self.config
         client = await self._get_client()
+        mode_label = "点歌" if mode == "request" else "翻唱"
 
         try:
-            items = await self._collect_search_items(client, song)
+            templates = (
+                cfg.search.request_query_templates
+                if mode == "request"
+                else cfg.search.query_templates
+            )
+            items = await self._collect_search_items(client, song, templates)
         except BilibiliError as exc:
-            self.ctx.logger.warning("B 站搜索失败: %s", exc)
+            self.ctx.logger.warning("B 站%s搜索失败: %s", mode_label, exc)
             await self.ctx.send.text(cfg.delivery.search_failed_text, stream_id)
             return False
 
+        if mode == "request":
+            no_result_template = cfg.delivery.request_no_result_text
+            no_result_default = "没有找到《{song}》的可播放版本，换个歌名试试？"
+        else:
+            no_result_template = cfg.delivery.no_result_text
+            no_result_default = "没有找到《{song}》的 AI 翻唱，换个歌名或歌手试试？"
+
         if not items:
-            text = safe_format(cfg.delivery.no_result_text, "没有找到《{song}》的 AI 翻唱，换个歌名或歌手试试？", song=song)
+            text = safe_format(no_result_template, no_result_default, song=song)
             await self.ctx.send.text(text, stream_id)
             return False
 
         common = {
             "min_duration": int(cfg.search.min_duration_seconds),
             "max_duration": int(cfg.search.max_duration_seconds),
-            "min_score": float(cfg.search.min_score),
             "limit": int(cfg.search.max_candidates),
         }
-        candidates = rank_search_items(items, song, require_ai=bool(cfg.search.require_ai), **common)
-        non_ai_fallback = False
-        if not candidates and cfg.search.require_ai and cfg.search.allow_non_ai_fallback:
-            candidates = rank_search_items(items, song, require_ai=False, **common)
-            non_ai_fallback = bool(candidates)
+
+        if mode == "request":
+            candidates = rank_request_items(
+                items,
+                song,
+                min_score=float(cfg.search.request_min_score),
+                **common,
+            )
+            non_ai_fallback = False
+        else:
+            candidates = rank_search_items(
+                items,
+                song,
+                require_ai=bool(cfg.search.require_ai),
+                min_score=float(cfg.search.min_score),
+                **common,
+            )
+            non_ai_fallback = False
+            if not candidates and cfg.search.require_ai and cfg.search.allow_non_ai_fallback:
+                candidates = rank_search_items(
+                    items,
+                    song,
+                    require_ai=False,
+                    min_score=float(cfg.search.min_score),
+                    **common,
+                )
+                non_ai_fallback = bool(candidates)
 
         if not candidates:
-            text = safe_format(cfg.delivery.no_result_text, "没有找到《{song}》的 AI 翻唱，换个歌名或歌手试试？", song=song)
+            text = safe_format(no_result_template, no_result_default, song=song)
             await self.ctx.send.text(text, stream_id)
             return False
 
         self.ctx.logger.info(
-            "《%s》候选: %s",
+            "《%s》%s候选: %s",
             song,
+            mode_label,
             [(candidate.bvid, candidate.score, candidate.is_ai) for candidate in candidates[:5]],
         )
 
@@ -450,6 +502,7 @@ class AiCoverPlugin(MaiBotPlugin):
                     song,
                     stream_id,
                     non_ai=non_ai_fallback,
+                    mode=mode,
                 )
             except Exception as exc:
                 self.ctx.logger.warning("候选处理异常 %s: %s", candidate.bvid, exc)
@@ -464,18 +517,23 @@ class AiCoverPlugin(MaiBotPlugin):
         if cfg.delivery.fallback_to_link:
             text = safe_format(
                 cfg.delivery.failure_text,
-                "找到《{song}》的翻唱了，但音频下载/发送失败，可以先点链接听听：{url}",
+                "找到《{song}》了，但音频下载/发送失败，可以先点链接听听：{url}",
                 song=song,
                 url=top_url,
             )
             await self.ctx.send.text(text, stream_id)
         return False
 
-    async def _collect_search_items(self, client: BilibiliClient, song: str) -> list[VideoSearchItem]:
+    async def _collect_search_items(
+        self,
+        client: BilibiliClient,
+        song: str,
+        templates: list[str] | tuple[str, ...] | None = None,
+    ) -> list[VideoSearchItem]:
         """按关键词模板依次搜索并去重。"""
 
         cfg = self.config
-        queries = expand_queries(song, cfg.search.query_templates)
+        queries = expand_queries(song, templates or cfg.search.query_templates)
         items: list[VideoSearchItem] = []
         seen: set[str] = set()
         errors: list[BilibiliError] = []
@@ -507,11 +565,13 @@ class AiCoverPlugin(MaiBotPlugin):
         stream_id: str,
         *,
         non_ai: bool,
+        mode: str = "cover",
     ) -> str:
         """尝试发送一个候选，返回 ``sent`` / ``skipped`` / ``send_failed``。"""
 
         cfg = self.config
         item = candidate.item
+        mode_label = "点歌" if mode == "request" else "翻唱"
 
         try:
             info = await client.video_info(item.bvid)
@@ -564,7 +624,7 @@ class AiCoverPlugin(MaiBotPlugin):
 
         ok = await self._send_voice(encoded.decode("ascii"), stream_id)
         if ok:
-            self.ctx.logger.info("已发送翻唱语音: %s %s", item.bvid, info.title or item.title)
+            self.ctx.logger.info("已发送%s语音: %s %s", mode_label, item.bvid, info.title or item.title)
             if cfg.delivery.send_done_text:
                 done = safe_format(cfg.delivery.done_text, "翻唱语音发好啦～", song=song)
                 await self.ctx.send.text(done, stream_id)
@@ -577,7 +637,7 @@ class AiCoverPlugin(MaiBotPlugin):
             else:
                 text = safe_format(
                     cfg.delivery.failure_text,
-                    "找到《{song}》的翻唱了，但音频下载/发送失败，可以先点链接听听：{url}",
+                    "找到《{song}》了，但音频下载/发送失败，可以先点链接听听：{url}",
                     song=song,
                     url=item.url,
                 )
