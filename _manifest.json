@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "github.husiya.ai-cover",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "name": "AI 翻唱点歌",
   "description": "支持 /翻唱、/点歌 和 @机器人 翻唱XX/唱XX/点歌XX：在 B 站搜索 AI 翻唱或歌曲音频，自动选择并下载音频，通过 QQ 语音消息发送。包含候选打分、音频缓存、冷却与每日上限。",
   "author": {
@@ -18,11 +18,11 @@
   },
   "host_application": {
     "min_version": "1.3.18",
-    "max_version": "1.3.99"
+    "max_version": "1.4.99"
   },
   "sdk": {
     "min_version": "2.19.0",
-    "max_version": "2.19.99"
+    "max_version": "2.98.99"
   },
   "dependencies": [
     {
